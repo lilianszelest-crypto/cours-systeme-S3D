@@ -1,0 +1,383 @@
+=====================================================================
+Programmation système : TD (allocation mémoire en C)
+Questions et réponses
+=====================================================================
+
+
+---------------------------------------------------------------------
+1. Comment la mémoire est-elle organisée dans un processus Linux ?
+---------------------------------------------------------------------
+Chaque processus dispose de son propre espace d'adressage virtuel,
+découpé en segments. Des adresses basses vers les adresses hautes :
+
+  adresses hautes  +---------------------------+
+                   | espace noyau (kernel)     |
+                   +---------------------------+
+                   | PILE (stack)              |  croît vers le bas
+                   |            |              |
+                   |            v              |
+                   |   ...                     |
+                   |            ^              |
+                   |            |              |
+                   | bibliothèques partagées / |
+                   | mappings mmap             |
+                   |   ...                     |
+                   |            ^              |
+                   | TAS (heap)                |  croît vers le haut
+                   +---------------------------+
+                   | BSS (globales non init.)  |
+                   +---------------------------+
+                   | DATA (globales init.)     |
+                   +---------------------------+
+                   | RODATA (constantes)       |
+                   +---------------------------+
+                   | TEXT (code machine)       |
+  adresses basses  +---------------------------+
+
+- text   : instructions machine du programme (lecture seule, exécutable)
+- rodata : constantes, littéraux de chaînes ("bonjour")
+- data   : variables globales/statiques initialisées
+- bss    : variables globales/statiques non initialisées (mises à 0)
+- tas    : allocation dynamique (malloc)
+- pile   : variables locales, paramètres, adresses de retour
+On peut voir la carte mémoire d'un processus avec : cat /proc/<pid>/maps
+
+
+---------------------------------------------------------------------
+2. Le code source d'un programme est-il en mémoire ? Où ?
+---------------------------------------------------------------------
+Non, pas le code source. Le source (fichier .c) est compilé en un
+exécutable. Ce qui est chargé en mémoire est le CODE MACHINE, dans le
+segment "text" (aussi appelé "code"), en lecture seule et exécutable.
+
+Exemple :
+    gcc prog.c -o prog      (le fichier prog.c n'est pas chargé)
+    ./prog                  (le code machine de prog va dans le segment text)
+
+
+---------------------------------------------------------------------
+3. Les variables d'un programme sont-elles en mémoire ? Où ?
+---------------------------------------------------------------------
+Oui, toutes, mais à des endroits différents selon leur type :
+
+    int g = 5;              // globale initialisée       -> segment data
+    int h;                  // globale non initialisée   -> segment bss
+    static int s;           // statique                  -> bss (ou data)
+    const char *msg = "hi"; // le littéral "hi"          -> rodata
+                            // (le pointeur msg lui-même -> data)
+
+    void f(void) {
+        int x = 3;                      // locale -> pile
+        int *p = malloc(sizeof(int));   // p est sur la pile,
+                                        // la zone pointée est dans le tas
+    }
+
+
+---------------------------------------------------------------------
+4. Les variables sont-elles stockées de manière permanente ?
+---------------------------------------------------------------------
+Non. Elles ne vivent que le temps d'exécution du processus :
+- variable locale : jusqu'à la fin du bloc/de la fonction
+- variable globale/statique : jusqu'à la fin du programme
+- zone allouée dynamiquement : jusqu'au free() (ou la fin du programme)
+Quand le processus se termine, toute sa mémoire est rendue au système.
+Pour conserver des données de façon permanente, il faut les écrire dans
+un fichier (fopen/fwrite, etc.) ou une base de données.
+
+
+---------------------------------------------------------------------
+5. Y a-t-il des zones mémoire temporaires ?
+---------------------------------------------------------------------
+Oui :
+- la PILE : zones temporaires créées à l'appel d'une fonction et
+  détruites automatiquement à son retour ;
+- le TAS : zones temporaires gérées par le programmeur (créées avec
+  malloc, détruites avec free).
+
+
+---------------------------------------------------------------------
+6. Comment les variables des fonctions sont-elles gérées ?
+---------------------------------------------------------------------
+Par la pile. À chaque appel de fonction, un "cadre de pile" (stack frame)
+est créé. Il contient : les paramètres, l'adresse de retour, les
+variables locales. Au retour de la fonction, le cadre est dépilé et ses
+variables disparaissent. Chaque appel (y compris récursif) a ses
+propres variables.
+
+Exemple :
+    int carre(int n) {      // n et r sont dans le cadre de carre()
+        int r = n * n;
+        return r;
+    }
+    int main(void) {
+        int a = carre(4);   // cadre créé à l'appel, détruit au retour
+        return 0;
+    }
+
+Attention : ne jamais renvoyer l'adresse d'une variable locale :
+    int *mauvais(void) { int x = 1; return &x; }   // ERREUR : x n'existe
+                                                   // plus après le retour
+
+
+---------------------------------------------------------------------
+7. Comment définir un tableau de taille fixe dans une fonction ?
+---------------------------------------------------------------------
+En indiquant une taille connue à la compilation. Le tableau est alors
+alloué sur la pile.
+
+    void f(void) {
+        int t[10];                    // 10 entiers, non initialisés
+        int u[5] = {1, 2, 3, 4, 5};   // initialisé
+        int v[100] = {0};             // tout à 0
+        for (int i = 0; i < 10; i++)
+            t[i] = i * i;
+    }
+
+Le nombre d'éléments se calcule avec : sizeof(t) / sizeof(t[0]).
+Les indices vont de 0 à taille-1 (t[10] serait un dépassement).
+
+
+---------------------------------------------------------------------
+8. Comment définir un tableau dont on ne connaît pas la taille d'avance ?
+---------------------------------------------------------------------
+Avec l'allocation dynamique (malloc, calloc, realloc), dans le tas :
+
+    int n;
+    scanf("%d", &n);
+    int *t = malloc(n * sizeof(int));
+    if (t == NULL) { /* erreur */ }
+    for (int i = 0; i < n; i++) t[i] = i;
+    ...
+    t = realloc(t, 2 * n * sizeof(int));   // agrandir (attention à NULL)
+    free(t);
+
+(Le C99 autorise aussi les tableaux à taille variable "int t[n];" sur la
+pile, mais c'est risqué pour de grandes tailles : pas de vérification
+d'erreur, risque de débordement de pile. Le malloc est préférable.)
+
+
+---------------------------------------------------------------------
+9. Qu'est-ce qu'une allocation statique ?
+---------------------------------------------------------------------
+C'est une allocation dont la taille est connue à la compilation.
+La mémoire est réservée automatiquement :
+- soit au chargement du programme (globales, static) ;
+- soit à l'entrée dans la fonction (variables locales, sur la pile).
+Il n'y a pas de free à faire.
+
+Exemples :
+    int compteur;           // globale
+    static double pi = 3.14;
+    int t[100];             // taille fixe
+    void f(void) { char buf[256]; }
+
+
+---------------------------------------------------------------------
+10. Qu'est-ce qu'une allocation dynamique ?
+---------------------------------------------------------------------
+C'est une allocation faite PENDANT l'exécution, avec une taille décidée
+à ce moment-là, via malloc / calloc / realloc. La mémoire reste
+disponible jusqu'à ce que le programmeur la libère avec free.
+
+Exemple :
+    char *s = malloc(50);   // 50 octets demandés à l'exécution
+    ...
+    free(s);
+
+
+---------------------------------------------------------------------
+11. Comment s'appelle la zone où se fait l'allocation dynamique ?
+---------------------------------------------------------------------
+Le TAS (en anglais : "heap").
+
+
+---------------------------------------------------------------------
+12. Où est cette zone ?
+---------------------------------------------------------------------
+Dans l'espace d'adressage du processus, juste au-dessus des segments
+data et bss, et en dessous de la pile. Le tas grandit vers les adresses
+hautes (via les appels système brk/sbrk), alors que la pile grandit
+vers les adresses basses. Pour les gros blocs, malloc utilise mmap
+(zone séparée).
+
+Exemple pour le voir :
+    int g;
+    int main(void) {
+        int loc;
+        int *p = malloc(4);
+        printf("bss   : %p\n", (void*)&g);
+        printf("tas   : %p\n", (void*)p);
+        printf("pile  : %p\n", (void*)&loc);
+        free(p);
+    }
+    // les adresses affichées sont dans l'ordre : bss < tas < pile
+
+
+---------------------------------------------------------------------
+13. Quelles sont les tailles des zones d'allocation statique et
+    dynamique ?
+---------------------------------------------------------------------
+- Statique :
+  * data/bss/text : fixées à la compilation (commande : size prog).
+  * pile : taille maximale limitée, 8 Mo par défaut sous Linux
+    (voir : ulimit -s). Dépasser = "stack overflow" (segfault).
+- Dynamique (tas) : pas de taille fixée à l'avance ; elle est limitée
+  par la mémoire disponible (RAM + swap, mémoire virtuelle) et par les
+  limites du système (ulimit -v, cgroups...).
+
+
+---------------------------------------------------------------------
+14. Comment s'utilise la fonction malloc ?
+---------------------------------------------------------------------
+    #include <stdlib.h>
+    void *malloc(size_t taille);
+
+- Elle reçoit une taille en octets et renvoie un pointeur (void *) vers
+  la zone allouée, ou NULL en cas d'échec. Il faut TOUJOURS tester.
+- La mémoire n'est PAS initialisée (calloc l'initialise à 0).
+- Utiliser sizeof pour la taille.
+
+Exemples :
+    int *p = malloc(sizeof(int));          // un entier
+    int *t = malloc(10 * sizeof(int));     // tableau de 10 entiers
+    int *z = calloc(10, sizeof(int));      // 10 entiers à 0
+    if (p == NULL) {
+        perror("malloc");
+        exit(EXIT_FAILURE);
+    }
+    *p = 42;
+
+
+---------------------------------------------------------------------
+15. Comment s'utilise la fonction free ?
+---------------------------------------------------------------------
+    #include <stdlib.h>
+    void free(void *ptr);
+
+Elle libère une zone obtenue par malloc/calloc/realloc, qui peut alors
+être réutilisée. Règles :
+- chaque malloc doit avoir un free (sinon : fuite mémoire) ;
+- ne pas libérer deux fois le même pointeur (double free) ;
+- ne pas utiliser la zone après free (use after free) ;
+- ne libérer que des pointeurs renvoyés par malloc ;
+- free(NULL) est autorisé et ne fait rien ;
+- bonne pratique : mettre le pointeur à NULL après free.
+
+Exemple :
+    int *t = malloc(10 * sizeof(int));
+    ...
+    free(t);
+    t = NULL;
+
+Outil de vérification : valgrind --leak-check=full ./prog
+
+
+---------------------------------------------------------------------
+16. Comment accéder à la mémoire allouée ?
+---------------------------------------------------------------------
+Via le pointeur renvoyé par malloc :
+- *p              : le contenu pointé
+- p[i]            : le i-ème élément (équivalent à *(p+i))
+- p->champ        : champ d'une structure pointée (équivalent à (*p).champ)
+
+Exemples :
+    int *t = malloc(5 * sizeof(int));
+    t[0] = 10;
+    *(t + 1) = 20;
+
+    struct point { int x, y; };
+    struct point *pt = malloc(sizeof(struct point));
+    pt->x = 3;
+    pt->y = 4;
+
+    free(t);
+    free(pt);
+
+Il ne faut pas sortir de la zone allouée (t[5] ici = comportement
+indéfini, souvent un segfault).
+
+
+---------------------------------------------------------------------
+17. Combien peut-on allouer de mémoire ?
+---------------------------------------------------------------------
+En théorie, jusqu'à la limite de la mémoire virtuelle disponible
+(très grande en 64 bits). En pratique, cela dépend de la RAM, du swap,
+des limites (ulimit -v) et de la politique d'overcommit de Linux (malloc
+peut réussir même si la mémoire physique n'est pas disponible, puis le
+processus peut être tué par l'OOM killer à l'utilisation). Si malloc
+échoue, il renvoie NULL.
+
+Exemple de test :
+    size_t n = 1UL << 40;            // 1 Tio
+    char *p = malloc(n);
+    if (p == NULL) printf("allocation impossible\n");
+
+
+---------------------------------------------------------------------
+18. Peut-on créer des variables de cette manière ?
+---------------------------------------------------------------------
+Oui et non. On peut créer des zones mémoire (un entier, un tableau, une
+structure) mais elles n'ont pas de nom : on y accède uniquement par un
+pointeur. Ce sont des "variables anonymes". Le pointeur, lui, est une
+variable normale (sur la pile ou globale).
+
+Exemple :
+    int *p = malloc(sizeof(int));  // zone anonyme dans le tas
+    *p = 7;                        // utilisée via p
+    free(p);
+
+Leur durée de vie n'est pas liée à une fonction : elle dure jusqu'au
+free, ce qui permet de renvoyer une zone depuis une fonction :
+    int *creer(int n) { return malloc(n * sizeof(int)); }
+
+
+---------------------------------------------------------------------
+19. Qu'est-ce qu'un pointeur ? Peut-on faire des opérations sur les
+    pointeurs ?
+---------------------------------------------------------------------
+Un pointeur est une variable qui contient une ADRESSE mémoire (celle
+d'une autre variable ou d'une zone allouée). Son type indique le type
+de ce qui est pointé.
+
+    int x = 5;
+    int *p = &x;     // p contient l'adresse de x
+    *p = 10;         // x vaut maintenant 10
+
+Opérations autorisées :
+- affectation / copie : q = p;
+- déréférencement : *p
+- addition/soustraction d'un entier : p + 2, p - 1, p++
+- différence de deux pointeurs du même tableau : q - p (nombre d'éléments)
+- comparaison : p == q, p < q, p == NULL
+Opérations interdites : addition de deux pointeurs, multiplication,
+division.
+
+Exemple :
+    int t[5] = {10, 20, 30, 40, 50};
+    int *p = t;
+    p++;              // p pointe sur t[1]
+    printf("%d\n", *p);        // 20
+    printf("%ld\n", (&t[4]) - p);   // 3
+
+
+---------------------------------------------------------------------
+20. Si p est un pointeur, que vaut p+1 ? Qu'est-ce que * et & ?
+---------------------------------------------------------------------
+- p+1 est l'adresse de l'élément SUIVANT, c'est-à-dire
+  p + sizeof(*p) octets (on avance d'un élément, pas d'un octet).
+  Exemple : si p est un int * valant 0x1000 et sizeof(int) = 4,
+  alors p+1 vaut 0x1004. Pour un double * (8 octets), p+1 = 0x1008.
+  On a aussi : p[i] == *(p+i).
+
+- * (opérateur de déréférencement) : donne l'objet pointé.
+  (Dans une déclaration, int *p signifie "p est un pointeur sur int".)
+- & (opérateur adresse de) : donne l'adresse d'une variable.
+
+Exemple :
+    int x = 8;
+    int *p = &x;                 // &x : adresse de x
+    printf("%d\n", *p);          // *p : 8
+    *p = 9;                      // x vaut 9
+    printf("%p %p\n", (void*)p, (void*)(p + 1));  // p et p+4 (octets)
+
+
